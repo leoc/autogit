@@ -1,11 +1,12 @@
 package main
 
 import (
-	"fmt"
 	"github.com/fsnotify/fsnotify"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // TODO:
@@ -47,6 +48,7 @@ func main() {
 				}
 				if event.Op&fsnotify.Write == fsnotify.Write {
 					log.Println("modified file:", event.Name)
+					commit()
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
@@ -59,6 +61,8 @@ func main() {
 	}()
 
 	<-done
+
+	commit()
 }
 
 func addDirWatcher(name string) error {
@@ -81,6 +85,7 @@ func watchDir(path string, fi os.FileInfo, err error) error {
 	if fi.Mode().IsDir() && !strings.HasPrefix(path, repo+"/.git") {
 		log.Println("Watching " + path)
 		touchKeepFile(path)
+		commit()
 		return watcher.Add(path)
 	}
 
@@ -107,3 +112,44 @@ func touchKeepFile(path string) error {
 	return nil
 }
 
+func repoClean() bool {
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = repo
+	cmd.Stderr = os.Stderr
+
+	if out, err := cmd.Output(); err != nil || string(out) == "" {
+		return true
+	}
+
+	return false
+}
+
+func commit() error {
+	if repoClean() {
+		return nil
+	}
+
+	log.Printf("%s: committing changes", repo)
+
+	gitaddcmd := exec.Command("git", "add", "-A")
+	gitaddcmd.Dir = repo
+	gitaddcmd.Stdout = os.Stdout
+	gitaddcmd.Stderr = os.Stderr
+	if err := gitaddcmd.Run(); err != nil {
+		log.Fatalf("%s: error adding: %s", repo, err)
+	}
+
+	commitcmd := exec.Command("git", "commit", "-m", "Auto-commit from autogit")
+	commitcmd.Dir = repo
+	commitcmd.Stdout = os.Stdout
+	commitcmd.Stderr = os.Stderr
+	if err := commitcmd.Run(); err != nil {
+		log.Println("%s: error committing: %s", repo, err)
+	}
+
+	return nil
+}
+
+func push() error {
+	return nil
+}
