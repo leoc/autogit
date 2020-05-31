@@ -45,10 +45,8 @@ func main() {
 				}
 				if event.Op&fsnotify.Create == fsnotify.Create {
 					addDirWatcher(event.Name)
-				}
-				if event.Op&fsnotify.Write == fsnotify.Write {
-					log.Println("modified file:", event.Name)
-					commit()
+				} else {
+					commitAndPush()
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
