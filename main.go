@@ -83,7 +83,7 @@ func watchDir(path string, fi os.FileInfo, err error) error {
 	if fi.Mode().IsDir() && !strings.HasPrefix(path, repo+"/.git") {
 		log.Println("Watching " + path)
 		touchKeepFile(path)
-		commit()
+		commitAndPush()
 		return watcher.Add(path)
 	}
 
@@ -122,11 +122,18 @@ func repoClean() bool {
 	return false
 }
 
-func commit() error {
+func commitAndPush() error {
 	if repoClean() {
 		return nil
 	}
 
+	commit()
+	push()
+
+	return nil
+}
+
+func commit() error {
 	log.Printf("%s: committing changes", repo)
 
 	gitaddcmd := exec.Command("git", "add", "-A")
@@ -149,5 +156,15 @@ func commit() error {
 }
 
 func push() error {
+	log.Printf("%s: committing changes", repo)
+
+	gitpushcmd := exec.Command("git", "push")
+	gitpushcmd.Dir = repo
+	gitpushcmd.Stdout = os.Stdout
+	gitpushcmd.Stderr = os.Stderr
+	if err := gitpushcmd.Run(); err != nil {
+		log.Fatalf("%s: error pushing: %s", repo, err)
+	}
+
 	return nil
 }
