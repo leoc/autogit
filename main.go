@@ -20,12 +20,14 @@ import (
 // remove dir
 
 var watcher *fsnotify.Watcher
+var repo, _ = filepath.Abs("./watchable")
 
 func main() {
 	watcher, _ = fsnotify.NewWatcher()
 	defer watcher.Close()
 
-	if err := filepath.Walk("./watchable", watchDir); err != nil {
+	log.Println(repo)
+	if err := filepath.Walk(repo, watchDir); err != nil {
 		log.Println("Error:", err)
 	}
 
@@ -63,17 +65,45 @@ func addDirWatcher(name string) error {
 	fi, err := os.Stat(name)
 
 	if err != nil {
-		log.Println("Error:", err)
+		// some temp files are removed when the change handler runs (e.g.
+		// from emacs), so we ignore files that throw an error here ...
+		return nil
 	}
 
 	return watchDir(name, fi, nil)
 }
 
-// watchDir gets run as a walk func, searching for directories to add watchers to
 func watchDir(path string, fi os.FileInfo, err error) error {
-	if fi.Mode().IsDir() {
+	if path == ".git" {
+		return nil
+	}
+
+	if fi.Mode().IsDir() && !strings.HasPrefix(path, repo+"/.git") {
+		log.Println("Watching " + path)
+		touchKeepFile(path)
 		return watcher.Add(path)
 	}
 
 	return nil
 }
+
+func touchKeepFile(path string) error {
+	if path == repo {
+		return nil
+	}
+
+	fullPath := filepath.Join(path, ".keep")
+	_, err := os.Stat(fullPath)
+	if os.IsNotExist(err) {
+		file, err := os.Create(fullPath)
+
+		if err != nil {
+			return err
+		}
+
+		defer file.Close()
+	}
+
+	return nil
+}
+
