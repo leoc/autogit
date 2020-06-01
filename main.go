@@ -33,10 +33,8 @@ func main() {
 		log.Println("Error:", err)
 	}
 
-	//
 	done := make(chan bool)
 
-	//
 	go func() {
 		for {
 			select {
@@ -139,46 +137,53 @@ func commitAndPush() error {
 		return nil
 	}
 
+	add()
 	commit()
 	push()
 
 	return nil
 }
 
-func commit() error {
-	log.Printf("%s: committing changes", repo)
+func add() {
+	cmd := exec.Command("git", "add", "-A")
+	cmd.Dir = repo
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 
-	gitaddcmd := exec.Command("git", "add", "-A")
-	gitaddcmd.Dir = repo
-	gitaddcmd.Stdout = os.Stdout
-	gitaddcmd.Stderr = os.Stderr
-	if err := gitaddcmd.Run(); err != nil {
-		log.Fatalf("%s: error adding: %s", repo, err)
+	_, err := cmd.Output()
+	if err != nil {
+		log.Printf("%s: error adding changes: %s\n%s", repo, err, err.(*exec.ExitError).Stderr)
+	} else {
+		log.Printf("%s: added changes", repo)
 	}
-
-	commitcmd := exec.Command("git", "commit", "-m", "Auto-commit from autogit")
-	commitcmd.Dir = repo
-	commitcmd.Stdout = os.Stdout
-	commitcmd.Stderr = os.Stderr
-	if err := commitcmd.Run(); err != nil {
-		log.Println("%s: error committing: %s", repo, err)
-	}
-
-	return nil
 }
 
-func push() error {
-	log.Printf("%s: committing changes", repo)
+func commit() {
+	cmd := exec.Command("git", "commit", "-m", "Auto-commit from autogit")
+	cmd.Dir = repo
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 
-	gitpushcmd := exec.Command("git", "push")
-	gitpushcmd.Dir = repo
-	gitpushcmd.Stdout = os.Stdout
-	gitpushcmd.Stderr = os.Stderr
-	if err := gitpushcmd.Run(); err != nil {
-		log.Fatalf("%s: error pushing: %s", repo, err)
+	_, err := cmd.Output()
+	if err != nil {
+		log.Printf("%s: error committing: %s\n%s", repo, err, err.(*exec.ExitError).Stderr)
+	} else {
+		log.Printf("%s: committed changes", repo)
 	}
+}
 
-	return nil
+func push() {
+	cmd := exec.Command("git", "push")
+	cmd.Dir = repo
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	_, err := cmd.Output()
+	if err != nil {
+		log.Printf("%s: error pushing: %s\n%s", repo, err, err.(*exec.ExitError).Stderr)
+	} else {
+		log.Printf("%s: pushed changes", repo)
+	}
 }
 
 func pull() {
