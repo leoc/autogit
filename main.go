@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // TODO:
@@ -39,6 +40,8 @@ func main() {
 	go func() {
 		for {
 			select {
+			case <-done:
+				log.Println("Watcher done")
 			case event, ok := <-watcher.Events:
 				if !ok {
 					return
@@ -58,9 +61,18 @@ func main() {
 		}
 	}()
 
-	<-done
-
-	commit()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	tickerDone := make(chan bool)
+	for {
+		select {
+		case <-tickerDone:
+			log.Println("Timer done")
+			return
+		case <-ticker.C:
+			pull()
+		}
+	}
 }
 
 func addDirWatcher(name string) error {
@@ -167,4 +179,14 @@ func push() error {
 	}
 
 	return nil
+}
+
+func pull() {
+	cmd := exec.Command("git", "pull", "--ff-only")
+	cmd.Dir = repo
+
+	_, err := cmd.Output()
+	if err != nil {
+		log.Printf("%s: error pulling: %s\n%s", repo, err, err.(*exec.ExitError).Stderr)
+	}
 }
