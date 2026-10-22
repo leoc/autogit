@@ -3,9 +3,13 @@
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-  outputs = { self, nixpkgs }:
+  outputs =
+    { self, nixpkgs }:
     let
-      systems = [ "x86_64-linux" "aarch64-linux" ];
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
@@ -20,14 +24,27 @@
           # Fall back to these when PATH (e.g. under systemd) lacks them.
           postInstall = ''
             wrapProgram $out/bin/autogit \
-              --suffix PATH : ${pkgs.lib.makeBinPath [ pkgs.git pkgs.openssh ]}
+              --suffix PATH : ${
+                pkgs.lib.makeBinPath [
+                  pkgs.git
+                  pkgs.openssh
+                ]
+              }
           '';
           meta.mainProgram = "autogit";
         };
       });
 
+      homeManagerModules.default = import ./nix/hm-module.nix self;
+
       devShells = forAll (pkgs: {
-        default = pkgs.mkShell { packages = [ pkgs.go pkgs.gopls pkgs.git ]; };
+        default = pkgs.mkShell {
+          packages = [
+            pkgs.go
+            pkgs.gopls
+            pkgs.git
+          ];
+        };
       });
     };
 }

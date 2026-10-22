@@ -126,7 +126,32 @@ With Nix: `nix build github:leoc/autogit` or use the flake's
 `packages.<system>.default`. Otherwise `go install github.com/leoc/autogit@latest`;
 git must be in `PATH`.
 
-Run it as a systemd user service with
+### Home Manager
+
+The flake provides a Home Manager module that installs autogit, writes
+the config and runs a systemd user service:
+
+```nix
+# flake inputs
+autogit = {
+  url = "github:leoc/autogit";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+
+# home configuration
+imports = [ inputs.autogit.homeManagerModules.default ];
+services.autogit = {
+  enable = true;
+  settings = {
+    defaults.push_remotes = [ "origin" ];
+    repos = [ { path = "~/notes"; } ];
+  };
+};
+```
+
+### systemd
+
+Without Home Manager, use
 [contrib/autogit.service](contrib/autogit.service). The service needs
 access to your SSH agent to push over SSH.
 
