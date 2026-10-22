@@ -1,0 +1,24 @@
+# systemd user unit for autogit.
+#
+#   cp contrib/autogit.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now autogit
+#
+# Adjust ExecStart to where autogit is installed. Pushing over SSH needs
+# an agent socket; set SSH_AUTH_SOCK below or import it into the user
+# manager (systemctl --user import-environment SSH_AUTH_SOCK).
+
+[Unit]
+Description=autogit: keep git repositories in sync with their remotes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/autogit run
+ExecReload=/bin/kill -HUP $MAINPID
+# Environment=SSH_AUTH_SOCK=%t/ssh-agent
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,31 @@
+# ~/.config/autogit/config.yaml
+#
+# Every option under defaults can be overridden per repository. Lists
+# (push_remotes, ignore) replace the default, they are not merged.
+
+defaults:
+  auto_commit: true           # commit worktree changes
+  auto_push: true             # push new local commits
+  auto_pull: true             # fetch and integrate upstream changes
+  push_remotes: []            # remotes autogit may push to; empty = none
+  commit_message: "autogit: {{.Files}} on {{.Host}}"
+  sign: false                 # sign autogit commits (commit.gpgsign)
+  debounce: 5s                # quiet time after the last change
+  min_commit_interval: 1m     # minimum time between autogit commits
+  pull_interval: 2m
+  ignore: [".#*", "#*#", "*~", "*.swp", "*.swx", ".*.kate-swp"]
+  on_pause: ""                # shell command run when a repo pauses
+
+repos:
+  - path: ~/notes
+    push_remotes: [origin]
+
+  - path: ~/dotfiles
+    name: dots
+    auto_commit: false        # only push and pull, commit by hand
+    push_remotes: [origin, backup]
+
+  - path: ~/journal
+    push_remotes: [backup]    # never push to origin
+    commit_message: "journal: {{.Count}} files on {{.Host}}"
+    on_pause: 'notify-send "autogit: $AUTOGIT_REPO paused" "$AUTOGIT_REASON"'
