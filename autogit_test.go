@@ -519,6 +519,7 @@ repos:
 }
 
 func TestExampleConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // the example glob must match nothing
 	cfg, err := LoadConfig("contrib/config.example.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -542,5 +543,292 @@ func TestParseStatus(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("entry %d = %v, want %v", i, got[i], want[i])
 		}
+	}
+}
+
+// commitOn makes a commit by hand on branch and switches back to main.
+func commitOn(t *testing.T, dir, branch, file string) {
+	t.Helper()
+	git(t, dir, "switch", "-q", branch)
+	write(t, filepath.Join(dir, file), branch+"\n")
+	git(t, dir, "add", ".")
+	git(t, dir, "commit", "-q", "-m", "on "+branch)
+	git(t, dir, "switch", "-q", "main")
+}
+
+func pushOnly(s *Settings) {
+	s.AutoCommit = ptr(false)
+	s.AutoPull = ptr(false)
+}
+
+func TestPushBranches(t *testing.T) {
+	w := newWorld(t)
+	a := w.clone("a")
+	for _, b := range []string{"feature/x", "wip"} {
+		git(t, a, "branch", b)
+		git(t, a, "push", "-q", "origin", b)
+	}
+	git(t, a, "branch", "feature/new") // not on the remote
+	commitOn(t, a, "main", "m")
+	commitOn(t, a, "feature/x", "x")
+	commitOn(t, a, "wip", "w")
+	commitOn(t, a, "feature/new", "n")
+
+	r := newRepo(t, a, func(s *Settings) {
+		pushOnly(s)
+		s.PushBranches = []string{"main", "feature/*"}
+	})
+	r.Sync(context.Background())
+	wantState(t, r, StateOK, "")
+
+	for branch, want := range map[string]string{"main": "on main", "feature/x": "on feature/x", "wip": "initial"} {
+		if got := git(t, w.remote, "log", "-1", "--format=%s", branch); got != want {
+			t.Errorf("remote %s = %q, want %q", branch, got, want)
+		}
+	}
+	if out := git(t, w.remote, "branch", "--list", "feature/new"); out != "" {
+		t.Errorf("feature/new was created on the remote: %q", out)
+	}
+}
+
+func TestPushBranchesNotCheckedOut(t *testing.T) {
+	// With push_branches, main is pushed even while another branch is
+	// checked out; without, only the current branch would be.
+	w := newWorld(t)
+	a := w.clone("a")
+	commitOn(t, a, "main", "m")
+	git(t, a, "switch", "-q", "-c", "topic")
+
+	r := newRepo(t, a, pushOnly)
+	r.Sync(context.Background())
+	if got := remoteLog(t, w.remote)[0]; got != "initial" {
+		t.Errorf("without push_branches main was pushed: %q", got)
+	}
+
+	r = newRepo(t, a, func(s *Settings) { pushOnly(s); s.PushBranches = []string{"main"} })
+	r.Sync(context.Background())
+	if got := remoteLog(t, w.remote)[0]; got != "on main" {
+		t.Errorf("remote main = %q, want on main", got)
+	}
+}
+
+// recordPushOptions makes the bare repository accept push options and
+// record them in a file, as GitLab would read ci.skip.
+func recordPushOptions(t *testing.T, bare string) string {
+	t.Helper()
+	git(t, bare, "config", "receive.advertisePushOptions", "true")
+	out := strings.TrimSuffix(bare, ".git") + "-push-options"
+	hook := filepath.Join(bare, "hooks", "pre-receive")
+	write(t, hook, "#!/bin/sh\nprintf '%s %s\\n' \"$GIT_PUSH_OPTION_COUNT\" \"$GIT_PUSH_OPTION_0\" >> "+out+"\n")
+	if err := os.Chmod(hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestPushOptions(t *testing.T) {
+	w := newWorld(t)
+	a := w.clone("a")
+	backup := w0bare(t, w.root, "backup.git")
+	git(t, a, "remote", "add", "backup", backup)
+	git(t, a, "push", "-q", "backup", "main")
+	originOpts := recordPushOptions(t, w.remote)
+	backupOpts := recordPushOptions(t, backup)
+
+	commitOn(t, a, "main", "m")
+	r := newRepo(t, a, func(s *Settings) {
+		pushOnly(s)
+		s.PushRemotes = []string{"origin", "backup"}
+		s.PushOptions = PushOptions{"*": {"ci.skip"}, "backup": {}}
+	})
+	r.Sync(context.Background())
+	wantState(t, r, StateOK, "")
+
+	if data, _ := os.ReadFile(originOpts); string(data) != "1 ci.skip\n" {
+		t.Errorf("origin push options = %q", data)
+	}
+	if data, _ := os.ReadFile(backupOpts); string(data) != "0 \n" {
+		t.Errorf("backup push options = %q", data)
+	}
+}
+
+func TestPushOptionsUnsupportedIsAnError(t *testing.T) {
+	w := newWorld(t)
+	a := w.clone("a")
+	commitOn(t, a, "main", "m")
+	r := newRepo(t, a, func(s *Settings) { pushOnly(s); s.PushOptions = PushOptions{"*": {"ci.skip"}} })
+	r.Sync(context.Background())
+	wantState(t, r, StateError, "push")
+	if got := remoteLog(t, w.remote)[0]; got != "initial" {
+		t.Errorf("pushed without push options: %q", got)
+	}
+}
+
+func TestPushOnlyNeverPullsOrCommits(t *testing.T) {
+	w := newWorld(t)
+	a, b := w.clone("a"), w.clone("b")
+	rb := newRepo(t, b, nil)
+	write(t, filepath.Join(b, "b.org"), "b\n")
+	commitAndSync(t, rb)
+
+	r := newRepo(t, a, pushOnly)
+	write(t, filepath.Join(a, "draft"), "uncommitted\n")
+	ctx := context.Background()
+	if r.cfg.AutoCommit {
+		t.Fatal("auto_commit on")
+	}
+	r.Sync(ctx)
+	wantState(t, r, StateOK, "")
+	if _, err := os.Stat(filepath.Join(a, "b.org")); err == nil {
+		t.Error("pulled although auto_pull is off")
+	}
+	if got := git(t, a, "log", "-1", "--format=%s"); got != "initial" {
+		t.Errorf("local head = %q", got)
+	}
+
+	// A local commit on a branch the remote moved ahead on is rejected
+	// and pauses the repository instead of being merged or forced.
+	commitOn(t, a, "main", "m")
+	r.Sync(ctx)
+	wantState(t, r, StatePaused, "push of origin/main rejected")
+	if got := remoteLog(t, w.remote)[0]; !strings.Contains(got, "b.org") {
+		t.Errorf("remote head = %q", got)
+	}
+}
+
+// mkRepo creates a non-bare repository with the given files.
+func mkRepo(t *testing.T, dir string, files ...string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "init", "-q")
+	for _, f := range files {
+		write(t, filepath.Join(dir, f), "x\n")
+	}
+	return dir
+}
+
+func TestConfigGlobs(t *testing.T) {
+	root := t.TempDir()
+	mkRepo(t, filepath.Join(root, "src", "plain"))
+	mkRepo(t, filepath.Join(root, "src", "gitlab"), ".gitlab-ci.yml")
+	mkRepo(t, filepath.Join(root, "src", "actions"), ".github/workflows/test.yml")
+	mkRepo(t, filepath.Join(root, "src", "excluded"))
+	mkRepo(t, filepath.Join(root, "src", "explicit"))
+	mkRepo(t, filepath.Join(root, "other", "plain"))
+	os.MkdirAll(filepath.Join(root, "src", "not-a-repo"), 0o755)
+	git(t, root, "init", "-q", "--bare", filepath.Join(root, "src", "bare.git"))
+
+	path := filepath.Join(root, "config.yaml")
+	write(t, path, `
+defaults:
+  push_remotes: [origin]
+  push_branches: [main, master]
+repos:
+  - path: `+root+`/src/explicit
+    name: mine
+    auto_commit: true
+  - path: `+root+`/src/*
+    exclude: ["`+root+`/src/excl*"]
+    auto_commit: false
+    auto_pull: false
+  - path: `+root+`/*/plain
+  - path: `+root+`/src/actions
+    push_options:
+      origin: [ci.skip]
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repos, err := cfg.Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]RepoConfig{}
+	for _, rc := range repos {
+		got[rc.Name] = rc
+	}
+	if len(got) != 4 {
+		t.Errorf("repos = %v", slicesKeys(got))
+	}
+	if rc, ok := got["mine"]; !ok || !rc.AutoCommit {
+		t.Errorf("explicit entry lost or overridden by glob: %+v", rc)
+	}
+	if rc, ok := got["plain"]; !ok || rc.AutoCommit || rc.Path != filepath.Join(root, "src", "plain") {
+		t.Errorf("plain = %+v", rc)
+	}
+	if rc, ok := got["other/plain"]; !ok || !rc.AutoCommit {
+		t.Errorf("other/plain = %+v (duplicate base name should be qualified)", rc)
+	}
+	if rc, ok := got["actions"]; !ok || len(rc.PushOptions.For("origin")) != 1 || len(rc.PushBranches) != 2 {
+		t.Errorf("actions = %+v (explicit entry with push_options)", rc)
+	}
+	if len(cfg.Skipped) != 1 || !strings.HasSuffix(cfg.Skipped[0].Path, "gitlab") ||
+		!strings.Contains(cfg.Skipped[0].Reason, ".gitlab-ci.yml") {
+		t.Errorf("skipped = %+v", cfg.Skipped)
+	}
+
+	// push_options make a CI repository eligible for a glob.
+	write(t, path, `
+defaults:
+  push_remotes: [origin]
+  push_options: [ci.skip]
+repos:
+  - path: `+root+`/src/*
+`)
+	cfg, _ = LoadConfig(path)
+	if repos, err = cfg.Resolve(); err != nil {
+		t.Fatal(err)
+	}
+	if len(repos) != 5 || len(cfg.Skipped) != 0 {
+		t.Errorf("with push_options: %d repos, skipped %+v", len(repos), cfg.Skipped)
+	}
+
+	for _, bad := range []string{
+		"repos:\n  - path: " + root + "/src/*\n    name: x\n",
+		"repos:\n  - path: " + root + "/src/plain\n    exclude: [x]\n",
+		"repos:\n  - path: " + root + "/nothing/*\n",
+		"repos:\n  - path: /a\n    push_branches: [\"[\"]\n",
+		"repos:\n  - path: /a\n    push_options: ci.skip\n",
+		"repos:\n  - path: /a\n    push_options: [\"\"]\n",
+	} {
+		write(t, path, bad)
+		cfg, err := LoadConfig(path)
+		if err == nil {
+			_, err = cfg.Resolve()
+		}
+		if err == nil {
+			t.Errorf("config %q: expected error", bad)
+		}
+	}
+}
+
+func slicesKeys[V any](m map[string]V) []string {
+	var out []string
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+func TestPushOptionsFor(t *testing.T) {
+	p := PushOptions{"*": {"ci.skip"}, "github": {}}
+	if got := p.For("origin"); len(got) != 1 || got[0] != "ci.skip" {
+		t.Errorf("origin = %v", got)
+	}
+	if got := p.For("github"); len(got) != 0 {
+		t.Errorf("github = %v", got)
+	}
+	if got := (PushOptions{}).For("origin"); got != nil {
+		t.Errorf("empty = %v", got)
+	}
+}
+
+func TestPushRejected(t *testing.T) {
+	out := "To ../origin.git\n=\trefs/heads/a:refs/heads/a\t[up to date]\n!\trefs/heads/main:refs/heads/main\t[rejected] (fetch first)\nDone\n"
+	if got := pushRejected(out); len(got) != 1 || got[0] != "refs/heads/main" {
+		t.Errorf("pushRejected = %v", got)
 	}
 }

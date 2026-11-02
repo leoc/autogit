@@ -137,7 +137,8 @@ func startDaemon(cfg *Config, repos []RepoConfig, log *slog.Logger) *daemon {
 	}
 	d := &daemon{cancel: cancel, status: NewStatusWriter(cfg.StateFile, names), done: make(chan error, 1)}
 	go func() { d.done <- d.status.Run() }()
-	log.Info("starting", "repos", len(repos), "state_file", cfg.StateFile)
+	log.Info("starting", "repos", len(repos), "skipped", len(cfg.Skipped), "state_file", cfg.StateFile)
+	logSkipped(cfg, log)
 	for _, rc := range repos {
 		ch := make(chan struct{}, 1)
 		d.syncChs = append(d.syncChs, ch)
@@ -145,6 +146,12 @@ func startDaemon(cfg *Config, repos []RepoConfig, log *slog.Logger) *daemon {
 		d.wg.Go(func() { repo.Run(ctx, ch) })
 	}
 	return d
+}
+
+func logSkipped(cfg *Config, log *slog.Logger) {
+	for _, s := range cfg.Skipped {
+		log.Info("skipping repository", "path", s.Path, "reason", s.Reason)
+	}
 }
 
 func (d *daemon) syncAll() {
@@ -203,10 +210,11 @@ func statusCmd(path string, args []string) (int, error) {
 
 // checkCmd runs one commit and sync per repository without watching.
 func checkCmd(path string, names []string, log *slog.Logger) (int, error) {
-	_, repos, err := loadRepos(path)
+	cfg, repos, err := loadRepos(path)
 	if err != nil {
 		return 1, err
 	}
+	logSkipped(cfg, log)
 	var results []RepoStatus
 	ctx := context.Background()
 	for _, rc := range repos {

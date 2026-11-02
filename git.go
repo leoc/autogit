@@ -134,6 +134,15 @@ func (g *Git) Branch(ctx context.Context) (string, error) {
 	return out, err
 }
 
+// Branches returns the names of all local branches.
+func (g *Git) Branches(ctx context.Context) ([]string, error) {
+	out, err := g.Run(ctx, "for-each-ref", "--format=%(refname:lstrip=2)", "refs/heads/")
+	if err != nil || out == "" {
+		return nil, err
+	}
+	return strings.Split(out, "\n"), nil
+}
+
 // HasCommits reports whether HEAD points to a commit (false in a fresh repo).
 func (g *Git) HasCommits(ctx context.Context) bool {
 	_, err := g.Run(ctx, "rev-parse", "-q", "--verify", "HEAD^{commit}")

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -295,7 +296,7 @@ func (r *Repo) sync(ctx context.Context) (string, error) {
 			return "", err
 		}
 		if len(rejected) > 0 {
-			return fmt.Sprintf("push to %s rejected (remote has diverged)", strings.Join(rejected, ", ")), nil
+			return fmt.Sprintf("push of %s rejected (remote has diverged)", strings.Join(rejected, ", ")), nil
 		}
 	}
 	r.counts(ctx)
@@ -415,58 +416,116 @@ func (r *Repo) rebaseBlocker(ctx context.Context, upRef string, ahead int) (stri
 	return "", nil
 }
 
-// Push pushes the current branch to every allowed remote that already has
-// it and is behind. It returns the remotes that rejected the push.
+// Push pushes the branches autogit may push (the current one, or every
+// local branch matching push_branches) to every allowed remote that
+// already has the branch and is behind. It returns the rejected
+// "remote/branch" pairs.
 func (r *Repo) Push(ctx context.Context) (rejected []string, err error) {
 	if r.paths.GitDir == "" || !r.cfg.AutoPush {
 		return nil, nil
 	}
 	defer func() { r.setErr("push", err) }()
-	branch, err := r.git.Branch(ctx)
-	if err != nil || branch == "" || !r.git.HasCommits(ctx) {
+	branches, err := r.pushBranches(ctx)
+	if err != nil || len(branches) == 0 {
 		return nil, err
 	}
 	var errs []error
 	for _, remote := range r.cfg.PushRemotes {
-		tracking := "refs/remotes/" + remote + "/" + branch
-		if !r.git.RefExists(ctx, tracking) {
-			r.log.Debug("branch not on remote, not pushing", "remote", remote, "branch", branch)
-			continue
-		}
-		ahead, _, err := r.git.AheadBehind(ctx, "HEAD", tracking)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		if ahead == 0 {
-			continue
-		}
-		ref := "refs/heads/" + branch
-		out, err := r.git.cmd(ctx, "", "push", "--porcelain", remote, ref+":"+ref)
-		if err != nil {
-			if pushRejected(out) {
-				r.log.Warn("push rejected", "remote", remote)
-				rejected = append(rejected, remote)
+		var refspecs []string
+		commits := 0
+		for _, branch := range branches {
+			tracking := "refs/remotes/" + remote + "/" + branch
+			if !r.git.RefExists(ctx, tracking) {
+				r.log.Debug("branch not on remote, not pushing", "remote", remote, "branch", branch)
 				continue
 			}
-			errs = append(errs, err)
+			ref := "refs/heads/" + branch
+			ahead, _, err := r.git.AheadBehind(ctx, ref, tracking)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if ahead > 0 {
+				refspecs = append(refspecs, ref+":"+ref)
+				commits += ahead
+			}
+		}
+		if len(refspecs) == 0 {
 			continue
 		}
+		args := []string{"push", "--porcelain"}
+		for _, o := range r.cfg.PushOptions.For(remote) {
+			args = append(args, "--push-option="+o)
+		}
+		args = append(args, remote)
+		out, err := r.git.cmd(ctx, "", append(args, refspecs...)...)
+		if err != nil {
+			if refs := pushRejected(out); len(refs) > 0 {
+				for _, ref := range refs {
+					rejected = append(rejected, remote+"/"+strings.TrimPrefix(ref, "refs/heads/"))
+				}
+				r.log.Warn("push rejected", "remote", remote, "refs", strings.Join(refs, ","))
+				if len(refs) == len(refspecs) {
+					continue
+				}
+				// Other refs went through.
+			} else {
+				errs = append(errs, err)
+				continue
+			}
+		}
 		r.st.LastPush = time.Now()
-		r.log.Info("pushed", "remote", remote, "commits", ahead)
+		r.log.Info("pushed", "remote", remote, "branches", len(refspecs), "commits", commits)
 	}
 	return rejected, errors.Join(errs...)
 }
 
-// pushRejected reports whether git push --porcelain output contains a ref
-// rejected by the remote (as opposed to a connection error).
-func pushRejected(out string) bool {
-	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(line, "!\t") {
+// pushBranches returns the local branches autogit may push: the current
+// branch when push_branches is unset, otherwise every local branch that
+// matches one of its patterns.
+func (r *Repo) pushBranches(ctx context.Context) ([]string, error) {
+	if r.cfg.PushBranches == nil {
+		branch, err := r.git.Branch(ctx)
+		if err != nil || branch == "" || !r.git.HasCommits(ctx) {
+			return nil, err
+		}
+		return []string{branch}, nil
+	}
+	all, err := r.git.Branches(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, b := range all {
+		if matchAny(r.cfg.PushBranches, b) {
+			out = append(out, b)
+		}
+	}
+	return out, nil
+}
+
+// matchAny reports whether name matches one of the patterns. "*" does not
+// match "/", as in git's own ref patterns.
+func matchAny(patterns []string, name string) bool {
+	for _, p := range patterns {
+		if ok, _ := path.Match(p, name); ok {
 			return true
 		}
 	}
 	return false
+}
+
+// pushRejected returns the local refs that git push --porcelain reports
+// as rejected by the remote (as opposed to a connection error).
+func pushRejected(out string) []string {
+	var refs []string
+	for _, line := range strings.Split(out, "\n") {
+		if rest, ok := strings.CutPrefix(line, "!\t"); ok {
+			src, _, _ := strings.Cut(rest, ":")
+			refs = append(refs, src)
+		}
+	}
+	return refs
 }
 
 // counts updates ahead/behind against the upstream without fetching.

@@ -36,9 +36,11 @@ resets or stashes.
   everything and commits with the configured message template. Each
   commit carries a trailer `Autogit: <host>`.
 - **Refs watcher.** Watches `HEAD`, `packed-refs` and `refs/heads/`. When
-  the current branch moves, for whatever reason, autogit pushes it to
-  every remote in `push_remotes` that already has this branch. New
-  branches are never created on remotes.
+  a branch moves, for whatever reason, autogit pushes it to every remote
+  in `push_remotes` that already has this branch. By default that is the
+  current branch only; with `push_branches` it is every local branch
+  matching one of the patterns, checked out or not. New branches are
+  never created on remotes.
 - **Sync** (every `pull_interval`, on start and on `autogit sync`):
   1. Pause if a merge, rebase, cherry-pick, revert or bisect is in
      progress, or HEAD is detached.
@@ -81,6 +83,8 @@ repos:
 | `auto_push` | `true` | push new commits to `push_remotes` |
 | `auto_pull` | `true` | fetch and integrate the upstream |
 | `push_remotes` | `[]` | remotes autogit may push to |
+| `push_branches` | current branch | branch patterns to push, e.g. `[main, "release/*"]` |
+| `push_options` | none | `git push -o` options: a list for all remotes, or a map from remote to list |
 | `commit_message` | `autogit: {{.Files}} on {{.Host}}` | Go template |
 | `sign` | `false` | sign autogit commits |
 | `debounce` | `5s` | quiet time before committing |
@@ -90,7 +94,55 @@ repos:
 | `on_pause` | | shell command run when a repository pauses |
 
 Per repository there are also `path` (required) and `name` (defaults to the
-directory name). Top-level options: `state_file` (default
+directory name).
+
+`push_branches` patterns use `*`, `?` and `[...]`; `*` does not match
+`/`, so `feature/*` matches `feature/x` but not `feature/x/y`.
+
+`push_options` are passed to `git push --push-option`. The remote must
+support them (`receive.advertisePushOptions`), otherwise the push fails
+and the repository is in the `error` state. A map entry for a remote
+replaces the `"*"` entry:
+
+```yaml
+push_options:
+  "*": [ci.skip]    # GitLab: create no pipeline
+  github: []        # GitHub ignores push options
+```
+
+### Many repositories
+
+`path` may be a glob. The entry then stands for every git worktree whose
+root it matches (bare repositories and plain directories are left out),
+with the entry's settings for all of them. `exclude` lists paths or
+globs to leave out; `name` is not allowed, each repository is named
+after its directory (`parent/dir` if that name is taken). An explicit
+entry for a path wins over a glob that matches it, and an earlier glob
+over a later one. Globs are expanded on start and on reload (SIGHUP), so
+new repositories are picked up then.
+
+A repository matched by a glob is skipped when it has a CI configuration
+(`.gitlab-ci.yml`, `.github/workflows`, `.forgejo/workflows`,
+`.gitea/workflows`, `.woodpecker.yml`, `.woodpecker/`, `.drone.yml`,
+`.circleci/`, `bitbucket-pipelines.yml`, `Jenkinsfile`, `.travis.yml`) and
+autogit would push to a remote without `push_options`, so that a push
+by autogit does not start a pipeline. List such a repository explicitly
+to push anyway. Skipped repositories are logged on start.
+
+A push-only setup, which pushes what you committed but never commits or
+pulls:
+
+```yaml
+defaults:
+  push_remotes: [origin]
+repos:
+  - path: ~/src/*
+    exclude: [~/src/scratch]
+    auto_commit: false
+    auto_pull: false
+    push_branches: [main, master]
+    pull_interval: 10m   # also the interval of the fetch before pushing
+``` Top-level options: `state_file` (default
 `~/.local/state/autogit/status.json`) and `git_timeout` (default `2m`).
 
 Template fields: `.Files` (changed paths, shortened to "a, b and 3 more"),

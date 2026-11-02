@@ -8,6 +8,8 @@ defaults:
   auto_push: true             # push new local commits
   auto_pull: true             # fetch and integrate upstream changes
   push_remotes: []            # remotes autogit may push to; empty = none
+  # push_branches: [main]     # branch patterns to push; unset = current branch
+  # push_options: [ci.skip]   # git push -o, for all remotes or {remote: [...]}
   commit_message: "autogit: {{.Files}} on {{.Host}}"
   sign: false                 # sign autogit commits (commit.gpgsign)
   debounce: 5s                # quiet time after the last change
@@ -29,3 +31,13 @@ repos:
     push_remotes: [backup]    # never push to origin
     commit_message: "journal: {{.Count}} files on {{.Host}}"
     on_pause: 'notify-send "autogit: $AUTOGIT_REPO paused" "$AUTOGIT_REASON"'
+
+  # A glob stands for every repository below it. Repositories with a CI
+  # configuration are skipped unless push_options are set.
+  - path: ~/src/*
+    exclude: [~/src/scratch]
+    auto_commit: false        # push-only: never commit or pull
+    auto_pull: false
+    push_branches: [main, master]
+    push_options:
+      origin: [ci.skip]
